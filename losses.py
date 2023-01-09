@@ -109,7 +109,7 @@ def get_stoch_am_loss(config, model, q_t, time_sampler, train):
 
 def get_amot_loss(config, model, q_t, time_sampler, train):
 
-  w_t_fn = lambda t: (1-t)
+  w_t_fn = lambda t: jnp.ones_like(t)
   dwdt_fn = jax.grad(lambda t: w_t_fn(t).sum(), argnums=0)
 
   def loss(key, params, sampler_state, batch):
