@@ -36,10 +36,11 @@ def get_config():
   # training
   config.train = train = ml_collections.ConfigDict()
   train.batch_size = 128
-  train.n_jitted_steps = 5
+  train.n_jitted_steps = 1
   train.n_iters = 100_000
-  train.save_every = 3_000
-  train.eval_every = 3_000
+  train.pretrain_steps = 5_000
+  train.save_every = 5_000
+  train.eval_every = 5_000
   train.log_every = 50
   train.lr = 1e-4
   train.beta1 = 0.9

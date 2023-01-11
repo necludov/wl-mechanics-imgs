@@ -68,8 +68,6 @@ class ActionNet(nn.Module):
 
     # Downsampling block
     
-    x_cond = jax.lax.stop_gradient(x[:,:,:,config.data.num_channels:])
-    x = jax.lax.concatenate([x[:,:,:,:config.data.num_channels], x_cond], 3)
     hs = [conv3x3(x, nf)]
     for i_level in range(num_resolutions):
       # Residual blocks for this resolution

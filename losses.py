@@ -109,10 +109,10 @@ def get_stoch_am_loss(config, model, q_t, time_sampler, train):
 
 def get_amot_loss(config, model, q_t, time_sampler, train):
 
-  w_t_fn = lambda t: jnp.ones_like(t)
+  w_t_fn = lambda t: (1-t)
   dwdt_fn = jax.grad(lambda t: w_t_fn(t).sum(), argnums=0)
 
-  def loss(key, params, sampler_state, batch):
+  def loss(key, params, sampler_state, batch, alpha):
     keys = random.split(key, num=9)
     s = mutils.get_model_fn(model, params, train=train)
     s_detached = mutils.get_model_fn(model, jax.lax.stop_gradient(params), train=train)
@@ -129,20 +129,90 @@ def get_amot_loss(config, model, q_t, time_sampler, train):
 
     mask = random.randint(keys[1], [bs,1,1,1], 0, 2)
     x_init = mask*x_1 + (1-mask)*x_0
-    x_t = x_init + (-mask*(1-t) + (1-mask)*t)*dsdx_fn(mask.astype(float), x_init, keys[2])
+    t_init = mask.astype(float)
+    num_steps = 3
+    dt = -mask*(1-t)/(num_steps+1) + (1-mask)*t/(num_steps+1)
+
+    def ode_step(carry_state, key):
+      x, t = carry_state
+      next_x = x + dt*dsdx_fn(t, x, key)
+      next_t = t + dt
+      return (next_x, next_t), None
+
+    x_t = jax.lax.scan(ode_step, (x_init, t_init), random.split(keys[2], num_steps))[0][0]
     s_0 = s(t_0, x_0, rng=keys[3])
     s_1 = s(t_1, x_1, rng=keys[4])
     loss = w_t_fn(t_0)*s_0.reshape((-1,1,1,1)) - w_t_fn(t_1)*s_1.reshape((-1,1,1,1))
+    # loss = s_0.reshape((-1,1,1,1)) - s_1.reshape((-1,1,1,1))
     print(loss.shape, 'boundaries.shape')
     dsdt_min, dsdx_min = dsdtdx_fn(t, jax.lax.stop_gradient(x_t), keys[5])
+    # min_loss = dsdt_min + 0.5*(dsdx_min**2).sum((1,2,3), keepdims=True)
     min_loss = w_t_fn(t)*(dsdt_min + 0.5*(dsdx_min**2).sum((1,2,3), keepdims=True))
     min_loss += s(t, x_t, keys[6]).reshape((-1,1,1,1))*dwdt_fn(t)
     print(loss.shape, 'detached_x.shape')
     dsdt_max, dsdx_max = dsdtdx_fn_detached(t, x_t, keys[7])
+    # max_loss = -(dsdt_max + 0.5*(dsdx_max**2).sum((1,2,3), keepdims=True))
     max_loss = -w_t_fn(t)*(dsdt_max + 0.5*(dsdx_max**2).sum((1,2,3), keepdims=True))
     max_loss += -s_detached(t, x_t, keys[8]).reshape((-1,1,1,1))*dwdt_fn(t)
     print(loss.shape, 'detached_params.shape')
     loss += min_loss + max_loss
+    print(loss.shape, 'final.shape')
+    return loss.mean(), next_sampler_state
+
+  return loss
+
+
+def get_interpolate_loss(config, model, q_t, time_sampler, train):
+
+  # w_t_fn = lambda t: jnp.ones_like(t)
+  # dwdt_fn = jax.grad(lambda t: w_t_fn(t).sum(), argnums=0)
+
+  def loss(key, params, sampler_state, batch, alpha):
+    keys = random.split(key, num=9)
+    s = mutils.get_model_fn(model, params, train=train)
+    s_detached = mutils.get_model_fn(model, jax.lax.stop_gradient(params), train=train)
+    dsdtdx_fn = jax.grad(lambda _t,_x,_key: s(_t,_x,_key).sum(), argnums=[0,1])
+    dsdtdx_fn_detached = jax.grad(lambda _t,_x,_key: s_detached(_t,_x,_key).sum(), argnums=[0,1])
+    dsdx_fn = jax.grad(lambda _t,_x,_key: s(_t,_x,_key).sum(), argnums=1)
+    
+    data = batch['image']
+    bs = data.shape[0]
+    t_0, t_1 = config.data.t_0*jnp.ones((bs,1,1,1)), config.data.t_1*jnp.ones((bs,1,1,1))
+    t, next_sampler_state = time_sampler.sample_t(bs, sampler_state)
+    t = jnp.expand_dims(t, (1,2,3))
+    x_0, x_1, x_t_am = q_t(keys[0], data, t)
+
+    mask = random.randint(keys[1], [bs,1,1,1], 0, 2)
+    x_init = mask*x_1 + (1-mask)*x_0
+    t_init = mask.astype(float)
+    num_steps = 3
+    dt = -mask*(1-t)/(num_steps+1) + (1-mask)*t/(num_steps+1)
+
+    def ode_step(carry_state, key):
+      prev_x, prev_t = carry_state
+      next_x = prev_x + dt*dsdx_fn(prev_t, prev_x, key)
+      next_t = prev_t + dt
+      return (next_x, next_t), None
+
+    x_t = jax.lax.scan(ode_step, (x_init, t_init), random.split(keys[2], num_steps))[0][0]
+    s_0 = s(t_0, x_0, rng=keys[3])
+    s_1 = s(t_1, x_1, rng=keys[4])
+    # loss = w_t_fn(t_0)*s_0.reshape((-1,1,1,1)) - w_t_fn(t_1)*s_1.reshape((-1,1,1,1))
+    loss = s_0.reshape((-1,1,1,1)) - s_1.reshape((-1,1,1,1))
+    print(loss.shape, 'boundaries.shape')
+    dsdt_min, dsdx_min = dsdtdx_fn(t, jax.lax.stop_gradient(x_t), keys[5])
+    min_loss = dsdt_min + 0.5*(dsdx_min**2).sum((1,2,3), keepdims=True)
+    # min_loss = w_t_fn(t)*(dsdt_min + 0.5*(dsdx_min**2).sum((1,2,3), keepdims=True))
+    # min_loss += s(t, x_t, keys[6]).reshape((-1,1,1,1))*dwdt_fn(t)
+    print(loss.shape, 'detached_x.shape')
+    dsdt_max, dsdx_max = dsdtdx_fn_detached(t, x_t, keys[6])
+    max_loss = -(dsdt_max + 0.5*(dsdx_max**2).sum((1,2,3), keepdims=True))
+    # max_loss = -w_t_fn(t)*(dsdt_max + 0.5*(dsdx_max**2).sum((1,2,3), keepdims=True))
+    # max_loss += -s_detached(t, x_t, keys[8]).reshape((-1,1,1,1))*dwdt_fn(t)
+    print(loss.shape, 'detached_params.shape')
+    dsdt_am, dsdx_am = dsdtdx_fn(t, x_t_am, keys[7])
+    am_loss = dsdt_am + 0.5*(dsdx_am**2).sum((1,2,3), keepdims=True)
+    loss += alpha*(min_loss + max_loss) + (1-alpha)*am_loss
     print(loss.shape, 'final.shape')
     return loss.mean(), next_sampler_state
 

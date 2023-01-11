@@ -22,13 +22,14 @@ def get_optimizer(config):
   return optimizer
 
 
-def get_step_fn(optimizer, loss_fn):
+def get_step_fn(config, optimizer, loss_fn):
 
   def step_fn(carry_state, batch):
     (rng, state) = carry_state
     rng, step_rng = jax.random.split(rng)
     grad_fn = jax.value_and_grad(loss_fn, argnums=1, has_aux=True)
-    (loss, new_sampler_state), grad = grad_fn(step_rng, state.model_params, state.sampler_state, batch)
+    alpha = jnp.min(jnp.array([state.step/config.train.pretrain_steps, 1.0]))
+    (loss, new_sampler_state), grad = grad_fn(step_rng, state.model_params, state.sampler_state, batch, alpha=alpha)
     grad = jax.lax.pmean(grad, axis_name='batch')
     updates, opt_state = optimizer.update(grad, state.opt_state, state.model_params)
     new_params = optax.apply_updates(state.model_params, updates)

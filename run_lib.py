@@ -41,18 +41,30 @@ def train(config, workdir):
   dynamics = dutils.get_dynamics(config.data.dynamics)
   time_sampler, init_sampler_state = dutils.get_time_sampler(config)
 
-  state = mutils.State(step=0, opt_state=opt_state,
+  state = mutils.State(step=1, opt_state=opt_state,
                        model_params=initial_params,
                        ema_rate=config.model.ema_rate,
                        params_ema=initial_params,
                        sampler_state=init_sampler_state,
                        key=key, wandbid=np.random.randint(int(1e7),int(1e8)))
 
+  # load checkpoint (preemption or pretrain)
   checkpoint_dir = os.path.join(workdir, "checkpoints")
   tf.io.gfile.makedirs(checkpoint_dir)
   state = checkpoints.restore_checkpoint(checkpoint_dir, state)
   initial_step = int(state.step)
   key = state.key
+
+  # starting from a pretrained model
+  # try:
+  #   if initial_step == config.train.pretrain_steps:
+  #     state.replace(opt_state=opt_state,
+  #                   model_params=state.params_ema,
+  #                   ema_rate=config.model.ema_rate,
+  #                   sampler_state=init_sampler_state)
+  #     initial_step += 1
+  # except AttributeError:
+  #   pass
 
   if jax.process_index() == 0:
     wandb.init(id=str(state.wandbid), 
@@ -63,8 +75,8 @@ def train(config, workdir):
     os.environ["WANDB_RUN_ID"] = str(state.wandbid)
   
   # init train step
-  loss_fn = losses.get_loss(config, model, dynamics, time_sampler, train=True)
-  step_fn = tutils.get_step_fn(optimizer, loss_fn)
+  loss_fn = losses.get_amot_loss(config, model, dynamics, time_sampler, train=True)
+  step_fn = tutils.get_step_fn(config, optimizer, loss_fn)
   p_step_fn = jax.pmap(functools.partial(jax.lax.scan, step_fn), axis_name='batch', donate_argnums=1)
 
   # artifacts init
@@ -83,6 +95,8 @@ def train(config, workdir):
   inverse_scaler = datasets.get_image_inverse_scaler(config)
 
   # run train
+  assert (config.train.n_iters % config.train.save_every) == 0
+
   pstate = flax_utils.replicate(state)
   key = jax.random.fold_in(key, jax.process_index())
   for step in range(initial_step, config.train.n_iters+1, config.train.n_jitted_steps):
@@ -113,24 +127,6 @@ def train(config, workdir):
       final_x = inverse_scaler(artifacts.reshape(artifact_shape))
       wandb.log(dict(examples=[wandb.Image(tutils.stack_imgs(final_x))],
                      nfe=jnp.mean(num_steps)), step=step)
-
-  # save final
-  saved_state = flax_utils.unreplicate(pstate)
-  saved_state = saved_state.replace(key=key)
-  checkpoints.save_checkpoint(checkpoint_dir, saved_state,
-                              step=step // config.train.save_every,
-                              keep=50)
-
-  # generate final
-  data = batch['image'][:,0].reshape((-1,) + artifact_shape[1:])
-  data = data[:artifact_shape[0]].reshape(pshape)
-  key, *next_keys = random.split(key, num=jax.local_device_count() + 1)
-  next_keys = jnp.asarray(next_keys)
-  artifacts, num_steps = p_artifact_generator(next_keys, pstate, data)
-  print(artifacts.shape, num_steps)
-  final_x = inverse_scaler(artifacts.reshape(artifact_shape))
-  wandb.log(dict(examples=[wandb.Image(tutils.stack_imgs(final_x))],
-                  nfe=jnp.mean(num_steps)), step=step)
 
 
 def evaluate(config, workdir, eval_folder):
