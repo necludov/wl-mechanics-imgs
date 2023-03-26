@@ -20,11 +20,11 @@ def get_config():
   # model
   config.model = model = ml_collections.ConfigDict()
   model.name = 'anet'
-  model.loss = 'am'
+  model.loss = 'amot'
   model.ema_rate = 0.9999
   model.normalization = 'GroupNorm'
   model.nonlinearity = 'swish'
-  model.nf = 128
+  model.nf = 64
   model.ch_mult = (1, 2, 2, 2)
   model.num_res_blocks = 2
   model.attn_resolutions = (16,8)
@@ -34,10 +34,10 @@ def get_config():
   # training
   config.train = train = ml_collections.ConfigDict()
   train.batch_size = 128
-  train.n_jitted_steps = 5
+  train.n_jitted_steps = 1
   train.n_iters = 300_000
-  train.save_every = 3_000
-  train.eval_every = 3_000
+  train.save_every = 5_000
+  train.eval_every = 10_000
   train.log_every = 50
   train.lr = 1e-4
   train.beta1 = 0.9

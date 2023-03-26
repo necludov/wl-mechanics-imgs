@@ -25,59 +25,61 @@ import train_utils as tutils
 import eval_utils as eutils
 from models import utils as mutils
 from dynamics import utils as dutils
-from models import anet, ddpm
+from models import anet, ddpm, mlp
 
 
 def train(config, workdir):
   key = random.PRNGKey(config.seed)
-
-  # init model
-  key, init_key = random.split(key)
-  model, _, initial_params = mutils.init_model(init_key, config)
-  optimizer = tutils.get_optimizer(config)
-  opt_state = optimizer.init(initial_params)
-
-  # init dynamics
-  dynamics = dutils.get_dynamics(config.data.dynamics)
-  time_sampler, init_sampler_state = dutils.get_time_sampler(config)
-
-  state = mutils.State(step=1, opt_state=opt_state,
-                       model_params=initial_params,
-                       ema_rate=config.model.ema_rate,
-                       params_ema=initial_params,
-                       sampler_state=init_sampler_state,
-                       key=key, wandbid=np.random.randint(int(1e7),int(1e8)))
-
-  # load checkpoint (preemption or pretrain)
   checkpoint_dir = os.path.join(workdir, "checkpoints")
   tf.io.gfile.makedirs(checkpoint_dir)
-  state = checkpoints.restore_checkpoint(checkpoint_dir, state)
-  initial_step = int(state.step)
-  key = state.key
 
-  # starting from a pretrained model
-  # try:
-  #   if initial_step == config.train.pretrain_steps:
-  #     state.replace(opt_state=opt_state,
-  #                   model_params=state.params_ema,
-  #                   ema_rate=config.model.ema_rate,
-  #                   sampler_state=init_sampler_state)
-  #     initial_step += 1
-  # except AttributeError:
-  #   pass
+  key, *init_key = random.split(key, 3)
+  # init model s
+  model_s, _, initial_params = mutils.init_model(init_key[0], config.model_s)
+  optimizer_s = tutils.get_optimizer(config.optimizer_s)
+  opt_state_s = optimizer_s.init(initial_params)
+  time_sampler, init_sampler_state = dutils.get_time_sampler(config)
+
+  state_s = mutils.State(step=1, opt_state=opt_state_s,
+                         model_params=initial_params,
+                         ema_rate=config.model_s.ema_rate,
+                         params_ema=initial_params,
+                         sampler_state=init_sampler_state,
+                         key=key, wandbid=np.random.randint(int(1e7),int(1e8)))
+  state_s = checkpoints.restore_checkpoint(checkpoint_dir, state_s, prefix='chkpt_s_')
+  initial_step = int(state_s.step)
+  key = state_s.key
+
+  # init model q
+  model_q, _, initial_params = mutils.init_model(init_key[1], config.model_q)
+  optimizer_q = tutils.get_optimizer(config.optimizer_q)
+  opt_state_q = optimizer_q.init(initial_params)
+
+  state_q = mutils.State(step=state_s.step, opt_state=opt_state_q,
+                         model_params=initial_params,
+                         ema_rate=config.model_q.ema_rate,
+                         params_ema=initial_params,
+                         sampler_state=init_sampler_state,
+                         key=state_s.key, wandbid=state_s.wandbid)
+  state_q = checkpoints.restore_checkpoint(checkpoint_dir, state_q, prefix='chkpt_q_')
 
   if jax.process_index() == 0:
-    wandb.init(id=str(state.wandbid), 
+    wandb.init(id=str(state_s.wandbid), 
                 project=config.data.task + '_' + config.data.dataset, 
                 resume="allow",
                 config=json.loads(config.to_json_best_effort()))
     os.environ["WANDB_RESUME"] = "allow"
-    os.environ["WANDB_RUN_ID"] = str(state.wandbid)
+    os.environ["WANDB_RUN_ID"] = str(state_s.wandbid)
   
   # init train step
-  loss_fn = losses.get_amot_loss(config, model, dynamics, time_sampler, train=True)
-  step_fn = tutils.get_step_fn(config, optimizer, loss_fn)
-  p_step_fn = jax.pmap(functools.partial(jax.lax.scan, step_fn), axis_name='batch', donate_argnums=1)
+  dynamics = dutils.get_dynamics(config.data.dynamics)
+  loss_fn_s = losses.get_loss(config.model_s, model_s, model_q, dynamics, time_sampler, train=True)
+  step_fn_s = tutils.get_step_fn(config, optimizer_s, loss_fn_s)
+  step_fn_s = jax.pmap(functools.partial(jax.lax.scan, step_fn_s), axis_name='batch')
+
+  loss_fn_q = losses.get_loss(config.model_q, model_s, model_q, dynamics, time_sampler, train=True)
+  step_fn_q = tutils.get_step_fn(config, optimizer_q, loss_fn_q)
+  step_fn_q = jax.pmap(functools.partial(jax.lax.scan, step_fn_q), axis_name='batch')
 
   # artifacts init
   artifact_shape = (config.eval.artifact_size, 
@@ -85,8 +87,8 @@ def train(config, workdir):
                     config.data.image_size, 
                     config.data.num_channels)
   pshape = (jax.local_device_count(), artifact_shape[0]//jax.local_device_count()) + artifact_shape[1:]
-  artifact_generator = tutils.get_artifact_generator(model, config, dynamics, pshape[1:])
-  p_artifact_generator = jax.pmap(artifact_generator, axis_name='batch')
+  artifact_generator = tutils.get_artifact_generator(model_s, config, dynamics, pshape[1:])
+  artifact_generator = jax.pmap(artifact_generator, axis_name='batch')
 
   # init dataloaders
   train_ds, _, _ = datasets.get_dataset(config, additional_dim=config.train.n_jitted_steps)
@@ -97,35 +99,48 @@ def train(config, workdir):
   # run train
   assert (config.train.n_iters % config.train.save_every) == 0
 
-  pstate = flax_utils.replicate(state)
+  state_s = flax_utils.replicate(state_s)
+  state_q = flax_utils.replicate(state_q)
   key = jax.random.fold_in(key, jax.process_index())
   for step in range(initial_step, config.train.n_iters+1, config.train.n_jitted_steps):
     batch = jax.tree_map(lambda x: scaler(x._numpy()), next(train_iter))
+    # state_q = state_q.replace(sampler_state=state_s.sampler_state)
     key, *next_key = random.split(key, num=jax.local_device_count() + 1)
     next_key = jnp.asarray(next_key)
-    (_, pstate), ploss = p_step_fn((next_key, pstate), batch)
-    loss = flax.jax_utils.unreplicate(ploss).mean()
+    (_, state_q, _), (ploss_q, _) = step_fn_q((next_key, state_q, state_s), batch)
+    loss_q = flax.jax_utils.unreplicate(ploss_q).mean()
+    # state_s = state_s.replace(sampler_state=state_q.sampler_state)
+    key, *next_key = random.split(key, num=jax.local_device_count() + 1)
+    next_key = jnp.asarray(next_key)
+    (_, state_s, _), (ploss_s, accelaration) = step_fn_s((next_key, state_s, state_q), batch)
+    loss_s = flax.jax_utils.unreplicate(ploss_s).mean()
+    accelaration = flax.jax_utils.unreplicate(accelaration).mean()
 
     if (step % config.train.log_every == 0) and (jax.process_index() == 0):
-      logging_dict = dict(loss=loss)
+      logging_dict = dict(loss_s=loss_s, loss_q=loss_q, accelaration=accelaration)
       wandb.log(logging_dict, step=step)
 
     if (step % config.train.save_every == 0) and (jax.process_index() == 0):
-      saved_state = flax_utils.unreplicate(pstate)
+      saved_state = flax_utils.unreplicate(state_s)
       saved_state = saved_state.replace(key=key)
       checkpoints.save_checkpoint(checkpoint_dir, saved_state,
                                   step=step // config.train.save_every,
-                                  keep=50)
+                                  keep=50, prefix='chkpt_s_')
+      saved_state = flax_utils.unreplicate(state_q)
+      saved_state = saved_state.replace(key=key)
+      checkpoints.save_checkpoint(checkpoint_dir, saved_state,
+                                  step=step // config.train.save_every,
+                                  keep=50, prefix='chkpt_q_')
 
     if step % config.train.eval_every == 0:
       data = batch['image'][:,0].reshape((-1,) + artifact_shape[1:])
       data = data[:artifact_shape[0]].reshape(pshape)
       key, *next_keys = random.split(key, num=jax.local_device_count() + 1)
       next_keys = jnp.asarray(next_keys)
-      artifacts, num_steps = p_artifact_generator(next_keys, pstate, data)
+      artifacts, num_steps = artifact_generator(next_keys, state_s, data)
       print(artifacts.shape, num_steps)
       final_x = inverse_scaler(artifacts.reshape(artifact_shape))
-      wandb.log(dict(examples=[wandb.Image(tutils.stack_imgs(final_x))],
+      wandb.log(dict(examples=[wandb.Image(tutils.stack_imgs(final_x, int(math.sqrt(artifact_shape[0])), int(math.sqrt(artifact_shape[0]))))],
                      nfe=jnp.mean(num_steps)), step=step)
 
 

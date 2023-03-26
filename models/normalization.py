@@ -22,10 +22,10 @@ import jax.numpy as jnp
 
 def get_normalization(config, conditional=False):
   """Obtain normalization modules from the config file."""
-  norm = config.model.normalization
+  norm = config.normalization
   if conditional:
     if norm == 'InstanceNorm++':
-      return functools.partial(ConditionalInstanceNorm2dPlus, num_classes=config.model.num_classes)
+      return functools.partial(ConditionalInstanceNorm2dPlus, num_classes=config.num_classes)
     else:
       raise NotImplementedError(f'{norm} not implemented yet.')
   else:

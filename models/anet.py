@@ -51,23 +51,24 @@ class ActionNet(nn.Module):
     act = get_act(config)
     normalize = get_normalization(config)
 
-    nf = config.model.nf
-    ch_mult = config.model.ch_mult
-    num_res_blocks = config.model.num_res_blocks
-    attn_resolutions = config.model.attn_resolutions
-    dropout = config.model.dropout
-    resamp_with_conv = config.model.resamp_with_conv
+    nf = config.nf
+    ch_mult = config.ch_mult
+    num_res_blocks = config.num_res_blocks
+    attn_resolutions = config.attn_resolutions
+    dropout = config.dropout
+    resamp_with_conv = config.resamp_with_conv
     num_resolutions = len(ch_mult)
 
     AttnBlock = functools.partial(layers.AttnBlock, normalize=normalize)
     ResnetBlock = functools.partial(ResnetBlockDDPM, act=act, normalize=normalize, dropout=dropout)
+    lrelu = functools.partial(nn.leaky_relu, negative_slope=0.2)
+    ResnetBlockLRELU = functools.partial(ResnetBlockDDPM, act=lrelu, normalize=normalize, dropout=dropout)
 
     temb = layers.get_timestep_embedding(t.ravel(), nf)
     temb = nn.Dense(nf * 4, kernel_init=default_initializer())(temb)
     temb = nn.Dense(nf * 4, kernel_init=default_initializer())(act(temb))
 
     # Downsampling block
-    
     hs = [conv3x3(x, nf)]
     for i_level in range(num_resolutions):
       # Residual blocks for this resolution
@@ -97,5 +98,4 @@ class ActionNet(nn.Module):
 
     h = act(normalize()(h))
     h = conv3x3(h, x.shape[-1], init_scale=0.)
-
     return (h*x).sum([1,2,3]).reshape(-1,1)

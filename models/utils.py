@@ -67,15 +67,10 @@ def get_model(name):
 
 def init_model(rng, config):
   """ Initialize a `flax.linen.Module` model. """
-  model_name = config.model.name
+  model_name = config.name
   model_def = functools.partial(get_model(model_name), config=config)
-  cond_channels = 0
-  try:
-    cond_channels = config.data.cond_channels
-  except AttributeError:
-    pass
-  x_shape = (jax.local_device_count(), config.data.image_size, config.data.image_size, config.data.num_channels + cond_channels)
-  t_shape = (jax.local_device_count(), 1)
+  x_shape = (jax.local_device_count(), config.image_size, config.image_size, config.num_channels)
+  t_shape = (jax.local_device_count(), 1, 1, 1)
   fake_x = jnp.zeros(x_shape)
   fake_t = jnp.zeros(t_shape, dtype=jnp.int32)
   params_rng, dropout_rng = jax.random.split(rng)
