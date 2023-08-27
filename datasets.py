@@ -23,6 +23,43 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 
+def get_batch_iterator(config, evaluation=False):
+  batch_size = config.eval.batch_size if evaluation else config.train.batch_size
+
+  train_ds, _, _ = get_dataset(config.data.target, 
+    batch_size, 
+    config.data.image_size, 
+    config.data.random_flip,
+    evaluation,
+    additional_dim=config.train.n_jitted_steps,
+    uniform_dequantization=config.data.uniform_dequantization)
+  train_iter_target = iter(train_ds)
+
+  scaler = get_image_scaler(config)
+  inverse_scaler = get_image_inverse_scaler(config)
+
+  if config.data.source == 'normal':
+    def batch_iterator(key):
+      batch_target = scaler(next(train_iter_target)['image']._numpy())
+      batch_source = jax.random.normal(key, shape=batch_target.shape)
+      return (batch_source, batch_target)
+  else:
+    train_ds, _, _ = get_dataset(config.data.source, 
+      batch_size, 
+      config.data.image_size, 
+      config.data.random_flip,
+      evaluation,
+      additional_dim=config.train.n_jitted_steps,
+      uniform_dequantization=config.data.uniform_dequantization)
+    train_iter_source = iter(train_ds)
+
+    def batch_iterator(key):
+      batch_target = scaler(next(train_iter_target)['image']._numpy())
+      batch_source = scaler(next(train_iter_source)['image']._numpy())
+      return (batch_source, batch_target)
+
+  return batch_iterator, scaler, inverse_scaler
+
 def get_image_scaler(config):
   def scaler(x):
     return (x - 0.5)/0.5
@@ -65,11 +102,10 @@ def central_crop(image, size):
   return tf.image.crop_to_bounding_box(image, top, left, size, size)
 
 
-def get_dataset(config, additional_dim=None, uniform_dequantization=False, evaluation=False):
+def get_dataset(dataset, batch_size, image_size, random_flip, evaluation, additional_dim=None, uniform_dequantization=False):
   """Create data loaders for training and evaluation.
 
   Args:
-    config: A ml_collection.ConfigDict parsed from config files.
     additional_dim: An integer or `None`. If present, add one additional dimension to the output data,
       which equals the number of steps jitted together.
     uniform_dequantization: If `True`, add uniform dequantization to images.
@@ -79,7 +115,6 @@ def get_dataset(config, additional_dim=None, uniform_dequantization=False, evalu
     train_ds, eval_ds, dataset_builder.
   """
   # Compute batch size for this worker.
-  batch_size = config.train.batch_size if not evaluation else config.eval.batch_size
   if batch_size % jax.device_count() != 0:
     raise ValueError(f'Batch sizes ({batch_size} must be divided by'
                      f'the number of devices ({jax.device_count()})')
@@ -96,35 +131,44 @@ def get_dataset(config, additional_dim=None, uniform_dequantization=False, evalu
     batch_dims = [jax.local_device_count(), additional_dim, per_device_batch_size]
 
   # Create dataset builders for each dataset.
-  if config.data.dataset == 'MNIST':
+  if dataset == 'MNIST':
     dataset_builder = tfds.builder('mnist')
     train_split_name = 'train'
     eval_split_name = 'test'
 
     def resize_op(img):
       img = tf.image.convert_image_dtype(img, tf.float32)
-      return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
+      return tf.image.resize(img, [image_size, image_size], antialias=True)
 
-  elif config.data.dataset == 'CIFAR10':
+  elif dataset == 'EMNIST':
+    dataset_builder = tfds.builder('emnist/letters')
+    train_split_name = 'train'
+    eval_split_name = 'test'
+
+    def resize_op(img):
+      img = tf.image.convert_image_dtype(img, tf.float32)
+      return tf.image.resize(img, [image_size, image_size], antialias=True)
+
+  elif dataset == 'CIFAR10':
     dataset_builder = tfds.builder('cifar10')
     train_split_name = 'train'
     eval_split_name = 'test'
 
     def resize_op(img):
       img = tf.image.convert_image_dtype(img, tf.float32)
-      return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
+      return tf.image.resize(img, [image_size, image_size], antialias=True)
 
-  elif config.data.dataset == 'SVHN':
+  elif dataset == 'SVHN':
     dataset_builder = tfds.builder('svhn_cropped')
     train_split_name = 'train'
     eval_split_name = 'test'
 
     def resize_op(img):
       img = tf.image.convert_image_dtype(img, tf.float32)
-      return tf.image.resize(img, [config.data.image_size, config.data.image_size], antialias=True)
+      return tf.image.resize(img, [image_size, image_size], antialias=True)
 
 
-  elif config.data.dataset == 'CELEBA':
+  elif dataset == 'CELEBA':
     dataset_builder = tfds.builder('celeb_a')
     train_split_name = 'train'
     eval_split_name = 'validation'
@@ -132,16 +176,16 @@ def get_dataset(config, additional_dim=None, uniform_dequantization=False, evalu
     def resize_op(img):
       img = tf.image.convert_image_dtype(img, tf.float32)
       img = central_crop(img, 140)
-      img = resize_small(img, config.data.image_size)
+      img = resize_small(img, image_size)
       return img
   else:
     raise NotImplementedError(
-      f'Dataset {config.data.dataset} not yet supported.')
+      f'Dataset {dataset} not yet supported.')
 
   def preprocess_fn(d):
     """Basic preprocessing function scales data to [0, 1) and randomly flips."""
     img = resize_op(d['image'])
-    if config.data.random_flip and not evaluation:
+    if random_flip and not evaluation:
       img = tf.image.random_flip_left_right(img)
     if uniform_dequantization:
       img = (tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.) / 256.

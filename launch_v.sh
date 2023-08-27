@@ -31,7 +31,7 @@ source /ssd003/home/${USER}/.bashrc
 source /ssd003/home/${USER}/venvs/jax-env/bin/activate
 
 
-python main.py --config configs/mnist_ot.py \
+python main.py --config configs/mnist_ot_gen.py \
                --workdir $PWD/checkpoint/${SLURM_JOB_ID} \
                --mode 'train'
 

@@ -10,7 +10,7 @@ def get_config():
 
   # data
   config.data = data = ml_collections.ConfigDict()
-  data.source = 'EMNIST'
+  data.source = 'normal'
   data.target = 'MNIST'
   data.ndims = 3
   data.image_size = 32
@@ -31,7 +31,7 @@ def get_config():
   model_s.ema_rate = 0.99
   model_s.normalization = 'GroupNorm'
   model_s.nonlinearity = 'swish'
-  model_s.nf = 32
+  model_s.nf = 64
   model_s.ch_mult = (1, 2, 2)
   model_s.num_res_blocks = 2
   model_s.attn_resolutions = (16,)

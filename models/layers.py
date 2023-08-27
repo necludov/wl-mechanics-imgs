@@ -38,6 +38,8 @@ def get_act(config):
     return functools.partial(nn.leaky_relu, negative_slope=0.2)
   elif config.nonlinearity.lower() == 'swish':
     return nn.swish
+  elif config.nonlinearity.lower() == 'tanh':
+    return jnp.tanh
   else:
     raise NotImplementedError('activation function does not exist!')
 

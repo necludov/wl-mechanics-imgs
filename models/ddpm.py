@@ -63,12 +63,12 @@ class Unet(nn.Module):
     ResnetBlock = functools.partial(ResnetBlockDDPM, act=act, normalize=normalize, dropout=dropout)
 
     temb = layers.get_timestep_embedding(t.ravel(), nf)
+    temb = jnp.concatenate([temb, t.reshape(-1,1) < 0.5], -1)
     temb = nn.Dense(nf * 4, kernel_init=default_initializer())(temb)
     temb = nn.Dense(nf * 4, kernel_init=default_initializer())(act(temb))
 
     # Downsampling block
-    x_t = (1-t)*x[:,:,:,:x.shape[-1]//3] + t*x[:,:,:,x.shape[-1]//3:2*x.shape[-1]//3]
-    hs = [conv3x3(jax.lax.concatenate([x, x_t], 3), nf)]
+    hs = [conv3x3(x, nf)]
     for i_level in range(num_resolutions):
       # Residual blocks for this resolution
       for i_block in range(num_res_blocks):
@@ -96,6 +96,6 @@ class Unet(nn.Module):
     assert not hs
 
     h = act(normalize()(h))
-    h = conv3x3(h, x.shape[-1]//3, init_scale=0.)
+    h = conv3x3(h, config.num_out_channels, init_scale=0.)
 
-    return jnp.sqrt(t*(1-t))*h + x_t
+    return h

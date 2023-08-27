@@ -22,13 +22,16 @@ def get_optimizer(config):
   return optimizer
 
 
-def get_step_fn(config, optimizer, loss_fn):
+def get_step_fn(config, optimizer, loss_fn, ema=False):
 
   def step_fn(carry_state, batch):
     (rng, state, helper_state) = carry_state
     rng, step_rng = jax.random.split(rng)
     grad_fn = jax.value_and_grad(loss_fn, argnums=1, has_aux=True)
-    (loss, (new_sampler_state, metric)), grad = grad_fn(step_rng, state.model_params, helper_state.model_params, state.sampler_state, batch)
+    (loss, (new_sampler_state, metrics)), grad = grad_fn(step_rng, 
+      state.model_params, 
+      helper_state.params_ema if ema else helper_state.model_params, 
+      state.sampler_state, batch)
     grad = jax.lax.pmean(grad, axis_name='batch')
     updates, opt_state = optimizer.update(grad, state.opt_state, state.model_params)
     new_params = optax.apply_updates(state.model_params, updates)
@@ -45,9 +48,9 @@ def get_step_fn(config, optimizer, loss_fn):
     )
 
     loss = jax.lax.pmean(loss, axis_name='batch')
-    metric = jax.lax.pmean(metric, axis_name='batch')
+    metrics = jax.tree_map(lambda _arr: jax.lax.pmean(_arr, axis_name='batch'), metrics)
     new_carry_state = (rng, new_state, helper_state)
-    return new_carry_state, (loss, metric)
+    return new_carry_state, (loss, metrics)
 
   return step_fn
 
@@ -93,13 +96,11 @@ def get_x_t_sampler(config, dynamics):
 
   return sample_x_t
 
-def get_artifact_generator(model, config, dynamics, artifact_shape):
-  if 'am' == config.model_s.loss:
-    generator = get_ot_generator(model, config, dynamics, artifact_shape)
-  elif 'sam' == config.model_s.loss:  
-    generator = get_sde_generator(model, config, dynamics, artifact_shape)
-  elif 'ot' == config.model_s.loss:  
-    generator = get_ot_generator(model, config, dynamics, artifact_shape)
+def get_artifact_generator(model, config, artifact_shape):
+  if 'am' == config.loss:
+    generator = get_ot_generator(model, config, artifact_shape)
+  elif 'rf' == config.loss:  
+    generator = get_ot_generator(model, config, artifact_shape)
   else:
     raise NotImplementedError(f'generator for {config.model.loss} is not implemented')
   return generator
@@ -160,16 +161,17 @@ def get_sde_generator(model, config, dynamics, artifact_shape):
   return artifact_generator
 
 
-def get_ot_generator(model, config, dynamics, artifact_shape):
+def get_ot_generator(model, config, artifact_shape):
 
-  def artifact_generator(key, state, batch):
-    x_0, _, _ = dynamics(key, batch, t=jnp.zeros((1)))
-    # x_0 = batch
+  def artifact_generator(key, state, x_0):
     x_0 = x_0[:x_0.shape[0]//2]
     s = mutils.get_model_fn(model, 
                             state.params_ema if config.eval.use_ema else state.model_params, 
                             train=False)
-    dsdx = jax.grad(lambda _t, _x: s(_t, _x).sum(), argnums=1)
+    if 'unet' == config.model_s.name:
+      dsdx = s
+    else:
+      dsdx = jax.grad(lambda _t, _x: s(_t, _x).sum(), argnums=1)
     vector_field = lambda _t,_x,_args: dsdx(_t,_x)
     solve = partial(diffrax.diffeqsolve, 
                     terms=diffrax.ODETerm(vector_field), 
