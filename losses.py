@@ -9,34 +9,38 @@ from dynamics import dynamics
 import dynamics.utils as dutils
 
 
-def get_loss(config, model_s, model_q, time_sampler, train):
-  if 'am' == config.loss:
-    losses = get_am_loss(config, model_s, model_q, time_sampler, train)
-  elif 'rf' == config.loss:
-    if 'unet' == config.model_s.name:
-      losses = get_rf_vf_loss(config, model_s, model_q, time_sampler, train)
-    else:
-      losses = get_rf_loss(config, model_s, model_q, time_sampler, train)
-  else:
-    raise NotImplementedError(f'loss {config.loss} is not implemented')
-  return losses
+# def get_loss(config, model_s, model_q, time_sampler, train):
+#   if 'am' == config.loss:
+#     losses = get_am_loss(config, model_s, model_q, time_sampler, train)
+#   elif 'rf' == config.loss:
+#     if 'unet' == config.model_s.name:
+#       losses = get_rf_vf_loss(config, model_s, model_q, time_sampler, train)
+#     else:
+#       losses = get_rf_loss(config, model_s, model_q, time_sampler, train)
+#   else:
+#     raise NotImplementedError(f'loss {config.loss} is not implemented')
+#   return losses
 
 def get_interpolant(config):
 
   def q_linear(model, params, train):
     nn = mutils.get_model_fn(model, params, train=train)
     def f(t, x_0, x_1, key):
-      x_t = (1-t)*x_0 + t*x_1
-      input_x = jax.lax.concatenate([x_0, x_1, x_t], 3)
-      return jnp.roll(x_t, 1, 0) + (1-t)*t*nn(t, input_x, key)
+      # x_t = (1-t)*x_0 + t*x_1
+      key, u_key = random.split(key)
+      input_x = jax.lax.concatenate([x_0, x_1, random.normal(u_key, shape=x_1.shape)], 3)
+      intermediate = nn(t, input_x, key)
+      out = (1-t)*x_0 + t*x_1 + (2*(1-t)*t)*nn(t, input_x, key)
+      print(out.shape, 'out.shape', flush=True)
+      return out
     return f
 
   def q_vp(model, params, train):
     nn = mutils.get_model_fn(model, params, train=train)
     def f(t, x_0, x_1, key):
       x_t = (1-t)*x_0 + t*x_1
-      key, u_key = random.split(key)
-      input_x = jax.lax.concatenate([x_0, x_1, x_t], 3)
+      # key, u_key = random.split(key)
+      input_x = jax.lax.concatenate([x_0, x_1], 3)
       out = x_t + jnp.sqrt(2*(1-t)*t)*nn(t, input_x, key)
       print(out.shape, 'out.shape', flush=True)
       return out
@@ -100,14 +104,16 @@ def get_interpolant(config):
     raise NotImplementedError(f'interpolant {config.interpolant} is not implemented')
 
 
-def get_am_loss(config, model_s, model_q, time_sampler, train):
+def get_loss(config, model_s, model_q, time_sampler, train):
 
   interpolant = get_interpolant(config)
 
-  def loss_s(key, params_s, params_q, sampler_state, batch):
-    keys = random.split(key, num=6)
+  def loss_fn(key, params_s, params_q, sampler_state, batch):
+    keys = random.split(key, num=7)
     s = mutils.get_model_fn(model_s, params_s, train=train)
-    q = interpolant(model_q, params_q, train=False)
+    q = interpolant(model_q, params_q, train=train)
+    
+    ################################################# loss s #################################################
     dsdtdx_fn = jax.grad(lambda t,x,_key: s(t,x,_key).sum(), argnums=[0,1])
     def potential(t, x, _key):
       dsdt, dsdx = dsdtdx_fn(t, x, _key)
@@ -122,51 +128,45 @@ def get_am_loss(config, model_s, model_q, time_sampler, train):
 
     # sample data
     x_0, x_1 = batch[0], batch[1]
-    x_t = q(t, x_0, x_1, keys[0])
-    for i in range(1):
-      x_t = jax.lax.stop_gradient(x_t + 1e-3*jnp.sqrt(2*(1-t)*t)*acceleration_fn(t, x_t, jax.random.fold_in(keys[1], i)))
+    samples_q = q(t, x_0, x_1, keys[0])
+    x_t = jax.lax.stop_gradient(samples_q)
+    t_mult = 1e-1*(2*(1-t)*t)
+    for i in range(config.train.n_grad_steps):
+      dx = jax.lax.stop_gradient(acceleration_fn(t, x_t, jax.random.fold_in(keys[1], i)))
+      x_t = x_t + t_mult*jnp.clip(dx, -1, 1)
     
     # boundaries loss
     s_0 = s(t_0, x_0, keys[2])
     s_1 = s(t_1, x_1, keys[3])
-    loss = s_0.reshape((-1,1,1,1)) - s_1.reshape((-1,1,1,1))
-    print(loss.shape, 'boundaries.shape', flush=True)
+    loss_s = s_0.reshape((-1,1,1,1)) - s_1.reshape((-1,1,1,1))
+    print(loss_s.shape, 'boundaries.shape', flush=True)
 
     # time loss
     dsdt, dsdx = dsdtdx_fn(t, x_t, keys[4])
-    loss += dsdt
+    loss_s += dsdt
     metrics = {}
-    metrics['cross_var'] = ((loss.squeeze()-loss.mean())**2).mean()
-    loss += 0.5*(dsdx**2).sum((1,2,3), keepdims=True)
-    print(loss.shape, 'final.shape', flush=True)
-    metrics['acceleration'] = jnp.sqrt((acceleration_fn(t, x_t, keys[5])**2).sum((1,2,3))).mean()
+    metrics['cross_var'] = ((loss_s.squeeze()-loss_s.mean())**2).mean()
+    loss_s += 0.5*(dsdx**2).sum((1,2,3), keepdims=True)
+    print(loss_s.shape, 'final.shape', flush=True)
+    metrics['loss_s'] = loss_s.mean()
+    total_loss = loss_s.mean()
+    
+    ################################################# loss q #################################################
+    
+    s_detached = mutils.get_model_fn(model_s, jax.lax.stop_gradient(params_s), train=train)
+    dsdtdx_fn_detached = jax.grad(lambda _t, _x, _key: s_detached(_t, _x, _key).sum(), argnums=[0,1])
+    dsdt_detached, dsdx_detached = dsdtdx_fn_detached(t, samples_q, keys[5])
+    loss_q = -(dsdt_detached + 0.5*(dsdx_detached**2).sum((1,2,3), keepdims=True))
+    print(loss_q.shape, 'final.shape', flush=True)
+    metrics['loss_q'] = loss_q.mean()
+    total_loss += loss_q.mean()
+    
+    metrics['acceleration'] = jnp.sqrt((acceleration_fn(t, x_t, keys[6])**2).sum((1,2,3))).mean()
     potential = jax.lax.stop_gradient((dsdt + 0.5*(dsdx**2).sum((1,2,3), keepdims=True)).squeeze())
     metrics['potential_var'] = ((potential.mean() - potential)**2).mean()
-    return loss.mean(), (next_sampler_state, metrics)
+    return total_loss, (next_sampler_state, metrics)
 
-  def loss_q(key, params_q, params_s, sampler_state, batch):
-    keys = random.split(key, num=2)
-    s = mutils.get_model_fn(model_s, params_s, train=False)
-    q = interpolant(model_q, params_q, train=train)
-    dsdtdx_fn = jax.grad(lambda t,x,_key: s(t,x,_key).sum(), argnums=[0,1])
-    
-    bs = batch[0].shape[0]
-    # sample time
-    t_0, t_1 = jnp.zeros((bs,1,1,1)), jnp.ones((bs,1,1,1))
-    t, next_sampler_state = time_sampler.sample_t(bs, sampler_state)
-    t = jnp.expand_dims(t, (1,2,3))
-
-    # sample data
-    x_0, x_1 = batch[0], batch[1]
-    x_t = q(t, x_0, x_1, keys[0])
-
-    # loss
-    dsdt, dsdx = dsdtdx_fn(t, x_t, keys[1])
-    loss = -(dsdt + 0.5*(dsdx**2).sum((1,2,3), keepdims=True))
-    print(loss.shape, 'final.shape', flush=True)
-    return loss.mean(), (next_sampler_state, {})
-
-  return loss_s, loss_q
+  return loss_fn
 
 #######################################################################################################
 #######################################################################################################

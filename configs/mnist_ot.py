@@ -6,7 +6,7 @@ def get_config():
 
   config.seed = 0
   config.loss = 'am'
-  config.interpolant = 'vp'
+  config.interpolant = 'linear'
 
   # data
   config.data = data = ml_collections.ConfigDict()
@@ -31,7 +31,7 @@ def get_config():
   model_s.ema_rate = 0.99
   model_s.normalization = 'GroupNorm'
   model_s.nonlinearity = 'swish'
-  model_s.nf = 32
+  model_s.nf = 128
   model_s.ch_mult = (1, 2, 2)
   model_s.num_res_blocks = 2
   model_s.attn_resolutions = (16,)
@@ -46,7 +46,7 @@ def get_config():
   model_q.ema_rate = 0.99
   model_q.normalization = 'GroupNorm'
   model_q.nonlinearity = 'swish'
-  model_q.nf = 32
+  model_q.nf = 128
   model_q.ch_mult = (1, 2, 2)
   model_q.num_res_blocks = 2
   model_q.attn_resolutions = (16,)

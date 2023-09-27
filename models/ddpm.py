@@ -63,7 +63,7 @@ class Unet(nn.Module):
     ResnetBlock = functools.partial(ResnetBlockDDPM, act=act, normalize=normalize, dropout=dropout)
 
     temb = layers.get_timestep_embedding(t.ravel(), nf)
-    temb = jnp.concatenate([temb, t.reshape(-1,1) < 0.5], -1)
+    # temb = jnp.concatenate([temb, t.reshape(-1,1) < 0.5], -1)
     temb = nn.Dense(nf * 4, kernel_init=default_initializer())(temb)
     temb = nn.Dense(nf * 4, kernel_init=default_initializer())(act(temb))
 

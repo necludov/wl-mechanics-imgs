@@ -73,12 +73,10 @@ def train(config, workdir):
     os.environ["WANDB_RUN_ID"] = str(state_s.wandbid)
   
   # init train step
-  loss_fn_s, loss_fn_q = losses.get_loss(config, model_s, model_q, time_sampler, train=True)
-  step_fn_s = tutils.get_step_fn(config, optimizer_s, loss_fn_s)
-  step_fn_s = jax.pmap(functools.partial(jax.lax.scan, step_fn_s), axis_name='batch')
-  step_fn_q = tutils.get_step_fn(config, optimizer_q, loss_fn_q)
-  step_fn_q = jax.pmap(functools.partial(jax.lax.scan, step_fn_q), axis_name='batch')
-
+  loss_fn = losses.get_loss(config, model_s, model_q, time_sampler, train=True)
+  step_fn = tutils.get_step_fn(config, optimizer_s, optimizer_q, loss_fn)
+  step_fn = jax.pmap(functools.partial(jax.lax.scan, step_fn), axis_name='batch')
+  
   # artifacts init
   artifact_shape = (config.eval.artifact_size, 
                     config.data.image_size, 
@@ -98,23 +96,15 @@ def train(config, workdir):
   state_q = flax_utils.replicate(state_q)
   key = jax.random.fold_in(key, jax.process_index())
   for step in range(initial_step, config.train.n_iters+1, config.train.n_jitted_steps):
-    current_state_s = deepcopy(state_s)
     key, batch_key = random.split(key)
     batch = batch_iterator(batch_key)
-    # state_s = state_s.replace(sampler_state=state_q.sampler_state)
     key, *next_key = random.split(key, num=jax.local_device_count() + 1)
     next_key = jnp.asarray(next_key)
-    (_, state_s, _), (ploss_s, metrics) = step_fn_s((next_key, state_s, state_q), batch)
-    loss_s = flax.jax_utils.unreplicate(ploss_s).mean()
-    # state_q = state_q.replace(sampler_state=state_s.sampler_state)
-    key, *next_key = random.split(key, num=jax.local_device_count() + 1)
-    next_key = jnp.asarray(next_key)
-    (_, state_q, _), (ploss_q, _) = step_fn_q((next_key, state_q, current_state_s), batch)
-    loss_q = flax.jax_utils.unreplicate(ploss_q).mean()
-
+    (_, state_s, state_q), (total_loss, metrics) = step_fn((next_key, state_s, state_q), batch)
+    total_loss = flax.jax_utils.unreplicate(total_loss).mean()
+    
     if (step % config.train.log_every == 0) and (jax.process_index() == 0):
-      logging_dict = dict(loss_s=loss_s.mean().item(), 
-                          loss_q=loss_q.mean().item())
+      logging_dict = dict(total_loss=total_loss.mean().item())
       for k in metrics:
         logging_dict[k] = metrics[k].mean().item()
       wandb.log(logging_dict, step=step)

@@ -10,8 +10,8 @@
 #SBATCH --partition=a40
 
 #SBATCH --gres=gpu:4
-#SBATC --account=deadline
-#SBATCH --qos=normal
+#SBATCH --account=deadline
+#SBATCH --qos=deadline
 #SBATCH --output=./logs/slurm-%j.out
 #SBATCH --error=./logs/slurm-%j.err
 
@@ -25,7 +25,8 @@ ln -sfn /checkpoint/${USER}/${SLURM_JOB_ID} $PWD/checkpoint/${SLURM_JOB_ID}
 touch /checkpoint/${USER}/${SLURM_JOB_ID}/DELAYPURGE
 mkdir /checkpoint/${USER}/${SLURM_JOB_ID}/checkpoints
 # continue from
-# cp /checkpoint/kirill/9003523/checkpoints/checkpoint_20 /checkpoint/${USER}/${SLURM_JOB_ID}/checkpoints/
+cp -r /checkpoint/kirill/10732360/checkpoints/chkpt_s_5 /checkpoint/${USER}/${SLURM_JOB_ID}/checkpoints/
+cp -r /checkpoint/kirill/10732360/checkpoints/chkpt_q_5 /checkpoint/${USER}/${SLURM_JOB_ID}/checkpoints/
 
 source /ssd003/home/${USER}/.bashrc
 source /ssd003/home/${USER}/venvs/jax-env/bin/activate
