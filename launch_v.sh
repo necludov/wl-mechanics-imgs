@@ -25,14 +25,17 @@ ln -sfn /checkpoint/${USER}/${SLURM_JOB_ID} $PWD/checkpoint/${SLURM_JOB_ID}
 touch /checkpoint/${USER}/${SLURM_JOB_ID}/DELAYPURGE
 mkdir /checkpoint/${USER}/${SLURM_JOB_ID}/checkpoints
 # continue from
-cp -r /checkpoint/kirill/10732360/checkpoints/chkpt_s_5 /checkpoint/${USER}/${SLURM_JOB_ID}/checkpoints/
-cp -r /checkpoint/kirill/10732360/checkpoints/chkpt_q_5 /checkpoint/${USER}/${SLURM_JOB_ID}/checkpoints/
+# cp -r /checkpoint/kirill/10732360/checkpoints/chkpt_s_5 /checkpoint/${USER}/${SLURM_JOB_ID}/checkpoints/
+# cp -r /checkpoint/kirill/10732360/checkpoints/chkpt_q_5 /checkpoint/${USER}/${SLURM_JOB_ID}/checkpoints/
+cp -r /checkpoint/kirill/10714475/checkpoints/chkpt_s_8 /checkpoint/${USER}/${SLURM_JOB_ID}/checkpoints/
+cp -r /checkpoint/kirill/10714475/checkpoints/chkpt_q_8 /checkpoint/${USER}/${SLURM_JOB_ID}/checkpoints/
+
 
 source /ssd003/home/${USER}/.bashrc
 source /ssd003/home/${USER}/venvs/jax-env/bin/activate
 
 
-python main.py --config configs/mnist_ot_gen.py \
+python main.py --config configs/cifar_ot_gen.py \
                --workdir $PWD/checkpoint/${SLURM_JOB_ID} \
                --mode 'train'
 

@@ -55,7 +55,7 @@ def get_config():
 
   # opts
   config.optimizer_s = optimizer_s = ml_collections.ConfigDict()
-  optimizer_s.lr = 1e-4
+  optimizer_s.lr = 2e-4
   optimizer_s.beta1 = 0.9
   optimizer_s.eps = 1e-8
   optimizer_s.warmup = 5_000

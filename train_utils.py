@@ -65,48 +65,6 @@ def get_step_fn(config, optimizer_s, optimizer_q, loss_fn):
 
   return step_fn
 
-
-def get_intermediate_generator(model, config, dynamics):
-
-  def generate_intermediate(key, state, batch):
-    s = mutils.get_model_fn(model, state.model_params, train=False)
-    dsdx_fn = jax.grad(lambda _t,_x,_key: s(_t,_x,_key).sum(), argnums=1)
-    data = batch['image'][0]
-    keys = jax.random.split(key)
-    t_0 = jnp.zeros((data.shape[0],1,1,1))
-    x_0, _, _ = dynamics(keys[0], data, t_0)
-    dt = 1e-2
-    num_ode_steps = int(1.0/dt)
-    def ode_step(carry_state, key):
-      x, t = carry_state
-      next_x = x + dt*dsdx_fn(t, x, key)
-      next_t = t + dt
-      return (next_x, next_t), next_x
-    x_t = jax.lax.scan(ode_step, (x_0, t_0), jax.random.split(keys[1], num_ode_steps))[1]
-    x_t = jnp.vstack([jnp.expand_dims(x_0, 0), x_t])
-    x_t = jax.lax.stop_gradient(x_t)
-    return x_t
-
-  return generate_intermediate
-
-
-def get_x_t_sampler(config, dynamics):
-
-  def schedule(step):
-    return jnp.min(jnp.array([step/20000, 1.0]))
-  
-  def sample_x_t(key, batch, ode_x_t, step):
-    data = batch['image'][:1]
-    keys = jax.random.split(key)
-    t = jnp.linspace(0.0,1.0,101).reshape((101,1,1,1,1))
-    _, _, x_t = dynamics(keys[0], data, t)
-    mask = jax.random.uniform(keys[1], (x_t.shape[0],x_t.shape[1],1,1,1)) < schedule(step)
-    mask = mask.astype(float)
-    x_t = mask*ode_x_t + (1-mask)*x_t
-    return x_t
-
-  return sample_x_t
-
 def get_artifact_generator(model, config, artifact_shape):
   if 'am' == config.loss:
     generator = get_ot_generator(model, config, artifact_shape)

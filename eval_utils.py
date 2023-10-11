@@ -56,8 +56,6 @@ def get_artifact_generator(model, config, dynamics, artifact_shape):
     generator = get_ode_generator(model, config, dynamics, artifact_shape)
   elif 'sam' == config.model.loss:  
     generator = get_sde_generator(model, config, dynamics, artifact_shape)
-  elif 'ssm' == config.model.loss:  
-    generator = get_ssm_generator(model, config, dynamics, artifact_shape)
   else:
     raise NotImplementedError(f'generator for f{config.model.loss} is not implemented')
   return generator
@@ -115,37 +113,5 @@ def get_sde_generator(model, config, dynamics, artifact_shape):
 
     solution = solve(y0=x_0, args=state)
     return solution.ys[-1][:,:,:,:artifact_shape[3]], solution.stats['num_steps']
-
-  return artifact_generator
-
-
-def get_ssm_generator(model, config, dynamics, artifact_shape):
-
-  def artifact_generator(key, state, batch):
-    key, gen_key = jax.random.split(key)
-    x_0, _, _ = dynamics(gen_key, batch, t=jnp.zeros((1)))
-    t_0 = jnp.zeros((x_0.shape[0],1))
-    s = mutils.get_model_fn(model, 
-                            state.params_ema if config.eval.use_ema else state.model_params, 
-                            train=False)
-    dt = 1e-2
-    langevin_step_size = 5e-3
-    def langevin_step(carry_state, step_key):
-      prev_x, t = carry_state
-      eps = jax.random.normal(step_key, shape=prev_x.shape)
-      next_x = prev_x + langevin_step_size*s(t, prev_x) + math.sqrt(2.0*langevin_step_size)*eps
-      return (next_x, t), next_x
-
-    def dxdt(carry_state, step_key):
-      prev_x, t = carry_state
-      langevin_keys = jax.random.split(step_key, 10)
-      next_t = t + dt
-      next_x = jax.lax.scan(langevin_step, (prev_x, next_t), langevin_keys)[0][0]
-      return (next_x, next_t), next_x
-
-    dxdt_keys = jax.random.split(key, int(1.0/dt)-1)
-    x_1 = jax.lax.scan(dxdt, (x_0, t_0), dxdt_keys)[0][0]
-    num_steps = len(dxdt_keys)*10
-    return x_1[:,:,:,:artifact_shape[3]], num_steps
 
   return artifact_generator
