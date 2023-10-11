@@ -1,4 +1,4 @@
-# Synthetic Action Matching
+# Wasserstein Lagrangian Flows (Image Generation)
 
 To run code 
 ```
